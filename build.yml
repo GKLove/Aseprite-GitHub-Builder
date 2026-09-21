@@ -1,0 +1,189 @@
+```yaml
+name: Build Aseprite
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Aseprite branch, tag, or commit"
+        required: true
+        default: "main"
+
+      build_type:
+        description: "Build type"
+        required: true
+        type: choice
+        default: "Release"
+        options:
+          - Release
+          - RelWithDebInfo
+          - Debug
+
+      enable_scripting:
+        description: "Enable Lua scripting"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Windows x64
+
+    runs-on: windows-latest
+
+    timeout-minutes: 40
+
+    steps:
+
+      # ------------------------------------------------------------
+      # 1. 获取 Aseprite 源码
+      # ------------------------------------------------------------
+      - name: Checkout Aseprite
+        uses: actions/checkout@v4
+        with:
+          repository: aseprite/aseprite
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          fetch-depth: 1
+
+
+      # ------------------------------------------------------------
+      # 2. 安装 Ninja
+      # ------------------------------------------------------------
+      - name: Install Ninja
+        uses: aseprite/get-ninja@main
+
+
+      # ------------------------------------------------------------
+      # 3. 配置 Visual Studio MSVC
+      # ------------------------------------------------------------
+      - name: Setup MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+
+      # ------------------------------------------------------------
+      # 4. 获取 Aseprite 当前版本对应的 Skia
+      # ------------------------------------------------------------
+      - name: Download Skia
+        shell: bash
+        run: |
+          echo "Getting Skia URL..."
+
+          skia_url=$(source laf/misc/skia-url.sh | xargs)
+
+          echo "Skia URL:"
+          echo "$skia_url"
+
+          skia_file=$(basename "$skia_url")
+
+          echo "Downloading:"
+          echo "$skia_file"
+
+          curl --ssl-revoke-best-effort \
+            -L \
+            -o "$skia_file" \
+            "$skia_url"
+
+          echo "Extracting Skia..."
+
+          unzip "$skia_file" -d skia
+
+          echo "Skia directory:"
+          ls -la skia
+
+
+      # ------------------------------------------------------------
+      # 5. 配置 CMake
+      # ------------------------------------------------------------
+      - name: Configure CMake
+        shell: bash
+        run: |
+          echo "Configuring Aseprite..."
+
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE="${{ inputs.build_type }}" \
+            -DLAF_BACKEND=skia \
+            -DSKIA_DIR="$(realpath skia)" \
+            -DSKIA_LIBRARY_DIR="$(realpath skia/out/Release-x64)" \
+            -DENABLE_SCRIPTING="${{ inputs.enable_scripting && 'on' || 'off' }}" \
+            -DENABLE_TESTS=OFF
+
+      # ------------------------------------------------------------
+      # 6. 编译
+      # ------------------------------------------------------------
+      - name: Build Aseprite
+        shell: bash
+        run: |
+          echo "Building Aseprite..."
+
+          cd build
+
+          ninja aseprite
+
+
+      # ------------------------------------------------------------
+      # 7. 检查输出
+      # ------------------------------------------------------------
+      - name: Check build output
+        shell: bash
+        run: |
+          echo "Build output:"
+
+          ls -lah build/bin
+
+          echo ""
+          echo "Aseprite executable:"
+
+          ls -lh build/bin/aseprite.exe
+
+
+      # ------------------------------------------------------------
+      # 8. 打包
+      # ------------------------------------------------------------
+      - name: Package Aseprite
+        shell: powershell
+        run: |
+          $version = "${{ inputs.ref }}"
+
+          if ($version -eq "") {
+              $version = "latest"
+          }
+
+          $packageName = "aseprite-windows-x64-$version"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "package" | Out-Null
+
+          Copy-Item `
+            -Path "build/bin/*" `
+            -Destination "package" `
+            -Recurse `
+            -Force
+
+          Compress-Archive `
+            -Path "package/*" `
+            -DestinationPath "$packageName.zip" `
+            -Force
+
+          Write-Host "Created:"
+          Write-Host "$packageName.zip"
+
+
+      # ------------------------------------------------------------
+      # 9. 上传 GitHub Actions Artifact
+      # ------------------------------------------------------------
+      - name: Upload Aseprite
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aseprite-Windows-x64-${{ inputs.ref }}
+          path: aseprite-windows-x64-*.zip
+          if-no-files-found: error
+          retention-days: 7
+```
